@@ -20,6 +20,7 @@ from django.db import DatabaseError
 from django.http import HttpRequest
 
 from elasticapm.base import Client
+from elasticapm.conf import constants
 from elasticapm.contrib.django.utils import iterate_with_template_sources
 from elasticapm.utils import compat, encoding, get_url_dict
 from elasticapm.utils.module_import import import_string
@@ -106,11 +107,11 @@ class DjangoClient(Client):
             'cookies': dict(request.COOKIES),
         }
 
-        if request.method not in ('GET', 'HEAD'):
+        if request.method in constants.HTTP_WITH_BODY:
             content_type = request.META.get('CONTENT_TYPE')
             if content_type == 'application/x-www-form-urlencoded':
                 data = compat.multidict_to_dict(request.POST)
-            elif content_type.startswith('multipart/form-data'):
+            elif content_type and content_type.startswith('multipart/form-data'):
                 data = compat.multidict_to_dict(request.POST)
                 if request.FILES:
                     data['_files'] = {field: file.name for field, file in compat.iteritems(request.FILES)}
@@ -179,7 +180,7 @@ class DjangoClient(Client):
                                   locals_processor_func=None):
         """If the stacktrace originates within the elasticapm module, it will skip
         frames until some other module comes up."""
-        frames = list(iterate_with_template_sources(
+        return list(iterate_with_template_sources(
             frames,
             with_locals=with_locals,
             library_frame_context_lines=library_frame_context_lines,
@@ -188,15 +189,6 @@ class DjangoClient(Client):
             exclude_paths_re=self.exclude_paths_re,
             locals_processor_func=locals_processor_func,
         ))
-        i = 0
-        while len(frames) > i:
-            if 'module' in frames[i] and not (
-                    frames[i]['module'].startswith('elasticapm.') or
-                    frames[i]['module'] == 'contextlib'
-            ):
-                return frames[i:]
-            i += 1
-        return frames
 
     def send(self, url, **kwargs):
         """

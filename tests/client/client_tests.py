@@ -74,10 +74,14 @@ def test_service_info(elasticapm_client):
 
 
 def test_process_info(elasticapm_client):
-    with mock.patch('os.getpid') as mock_pid, mock.patch.object(sys, 'argv', ['a', 'b', 'c']):
-        mock_pid.return_value = 123
+    with mock.patch.object(sys, 'argv', ['a', 'b', 'c']):
         process_info = elasticapm_client.get_process_info()
-    assert process_info['pid'] == 123
+    assert process_info['pid'] == os.getpid()
+    if hasattr(os, 'getppid'):
+        assert process_info['ppid'] == os.getppid()
+    else:
+        # Windows + Python 2.7
+        assert process_info['ppid'] is None
     assert process_info['argv'] == ['a', 'b', 'c']
 
 
@@ -359,6 +363,24 @@ def test_message_event(elasticapm_client):
     assert frame['vars']['a_long_local_list'][-1] == "(90 more elements)"
 
 
+def test_param_message_event(elasticapm_client):
+    elasticapm_client.capture('Message', param_message={'message': 'test %s %d', 'params': ('x', 1)})
+
+    assert len(elasticapm_client.events) == 1
+    event = elasticapm_client.events.pop(0)['errors'][0]
+    assert event['log']['message'] == 'test x 1'
+    assert event['log']['param_message'] == 'test %s %d'
+
+
+def test_message_with_percent(elasticapm_client):
+    elasticapm_client.capture('Message', message='This works 100% of the time')
+
+    assert len(elasticapm_client.events) == 1
+    event = elasticapm_client.events.pop(0)['errors'][0]
+    assert event['log']['message'] == 'This works 100% of the time'
+    assert event['log']['param_message'] == 'This works 100% of the time'
+
+
 def test_logger(elasticapm_client):
     elasticapm_client.capture('Message', message='test', logger_name='test')
 
@@ -552,7 +574,7 @@ def test_collect_local_variables_transactions(should_collect, elasticapm_client)
         pass
     elasticapm_client.end_transaction('test', 'ok')
     transaction = elasticapm_client.instrumentation_store.get_all()[0]
-    frame = transaction['spans'][0]['stacktrace'][5]
+    frame = transaction['spans'][0]['stacktrace'][0]
     if mode in ('transactions', 'all'):
         assert 'vars' in frame, mode
         assert frame['vars']['a_local_var'] == 1
@@ -578,8 +600,8 @@ def test_collect_source_transactions(should_collect, elasticapm_client):
         pass
     elasticapm_client.end_transaction('test', 'ok')
     transaction = elasticapm_client.instrumentation_store.get_all()[0]
-    in_app_frame = transaction['spans'][0]['stacktrace'][5]
-    library_frame = transaction['spans'][0]['stacktrace'][6]
+    in_app_frame = transaction['spans'][0]['stacktrace'][0]
+    library_frame = transaction['spans'][0]['stacktrace'][1]
     assert not in_app_frame['library_frame']
     assert library_frame['library_frame']
     if library_frame_context:
@@ -657,6 +679,50 @@ def test_transaction_max_spans(should_collect, elasticapm_client):
     for span in transaction['spans']:
         assert span['name'] == 'nodrop'
     assert transaction['span_count'] == {'dropped': {'total': 10}}
+
+
+@pytest.mark.parametrize('elasticapm_client', [{'span_frames_min_duration_ms': 20}], indirect=True)
+@mock.patch('elasticapm.base.TransactionsStore.should_collect')
+def test_transaction_span_frames_min_duration(should_collect, elasticapm_client):
+    should_collect.return_value = False
+    elasticapm_client.begin_transaction('test_type')
+    with elasticapm.capture_span('noframes'):
+        time.sleep(0.001)
+    with elasticapm.capture_span('frames'):
+        time.sleep(0.040)
+    elasticapm_client.end_transaction('test')
+
+    transaction = elasticapm_client.instrumentation_store.get_all()[0]
+    spans = transaction['spans']
+
+    assert len(spans) == 2
+    assert spans[0]['name'] == 'noframes'
+    assert 'stacktrace' not in spans[0]
+
+    assert spans[1]['name'] == 'frames'
+    assert spans[1]['stacktrace'] is not None
+
+
+@pytest.mark.parametrize('elasticapm_client', [{'span_frames_min_durarion_ms': -1}], indirect=True)
+@mock.patch('elasticapm.base.TransactionsStore.should_collect')
+def test_transaction_span_frames_min_duration_no_limit(should_collect, elasticapm_client):
+    should_collect.return_value = False
+    elasticapm_client.begin_transaction('test_type')
+    with elasticapm.capture_span('frames'):
+        pass
+    with elasticapm.capture_span('frames'):
+        time.sleep(0.040)
+    elasticapm_client.end_transaction('test')
+
+    transaction = elasticapm_client.instrumentation_store.get_all()[0]
+    spans = transaction['spans']
+
+    assert len(spans) == 2
+    assert spans[0]['name'] == 'frames'
+    assert spans[0]['stacktrace'] is not None
+
+    assert spans[1]['name'] == 'frames'
+    assert spans[1]['stacktrace'] is not None
 
 
 @pytest.mark.parametrize('elasticapm_client', [{'transaction_max_spans': 3}], indirect=True)

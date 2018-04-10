@@ -669,6 +669,29 @@ def test_transaction_metrics(django_elasticapm_client, client):
         assert transaction['name'] == 'GET tests.contrib.django.testapp.views.no_error'
 
 
+def test_transaction_metrics_debug(django_elasticapm_client, client):
+    with override_settings(DEBUG=True, **middleware_setting(
+        django.VERSION, ['elasticapm.contrib.django.middleware.TracingMiddleware']
+    )):
+        assert len(django_elasticapm_client.instrumentation_store) == 0
+        client.get(reverse('elasticapm-no-error'))
+        assert len(django_elasticapm_client.instrumentation_store) == 0
+
+
+@pytest.mark.parametrize('django_elasticapm_client', [
+    {'debug': True}
+], indirect=True)
+def test_transaction_metrics_debug_and_client_debug(django_elasticapm_client, client):
+    assert django_elasticapm_client.config.debug is True
+
+    with override_settings(DEBUG=True, **middleware_setting(
+        django.VERSION, ['elasticapm.contrib.django.middleware.TracingMiddleware']
+    )):
+        assert len(django_elasticapm_client.instrumentation_store) == 0
+        client.get(reverse('elasticapm-no-error'))
+        assert len(django_elasticapm_client.instrumentation_store) == 1
+
+
 def test_request_metrics_301_append_slash(django_elasticapm_client, client):
     django_elasticapm_client.instrumentation_store.get_all()  # clear the store
 
@@ -943,7 +966,7 @@ def test_stacktrace_filtered_for_elasticapm(client, django_elasticapm_client):
     assert spans[1]['name'] == 'list_users.html'
 
     # Top frame should be inside django rendering
-    assert spans[1]['stacktrace'][0]['module'].startswith('django.template')
+    assert spans[1]['stacktrace'][0]['module'].startswith('django.template'), spans[1]['stacktrace'][0]['function']
 
 
 @pytest.mark.parametrize('django_elasticapm_client', [{'_wait_to_first_send': 100}], indirect=True)
@@ -1120,6 +1143,10 @@ def test_middleware_not_set():
         call_command('elasticapm', 'check', stdout=stdout)
     output = stdout.getvalue()
     assert 'Tracing middleware not configured!' in output
+    if django.VERSION < (1, 10):
+        assert 'MIDDLEWARE_CLASSES' in output
+    else:
+        assert 'MIDDLEWARE setting' in output
 
 
 def test_middleware_not_first():
@@ -1128,6 +1155,26 @@ def test_middleware_not_first():
         'foo',
         'elasticapm.contrib.django.middleware.TracingMiddleware'
     ))):
+        call_command('elasticapm', 'check', stdout=stdout)
+    output = stdout.getvalue()
+    assert 'not at the first position' in output
+    if django.VERSION < (1, 10):
+        assert 'MIDDLEWARE_CLASSES' in output
+    else:
+        assert 'MIDDLEWARE setting' in output
+
+
+@pytest.mark.skipif(not ((1, 10) <= django.VERSION < (2, 0)),
+                    reason='only needed in 1.10 and 1.11 when both middleware settings are valid')
+def test_django_1_10_uses_deprecated_MIDDLEWARE_CLASSES():
+    stdout = compat.StringIO()
+    with override_settings(
+        MIDDLEWARE=None,
+        MIDDLEWARE_CLASSES=[
+            'foo',
+            'elasticapm.contrib.django.middleware.TracingMiddleware'
+        ],
+    ):
         call_command('elasticapm', 'check', stdout=stdout)
     output = stdout.getvalue()
     assert 'not at the first position' in output
@@ -1248,3 +1295,15 @@ def test_capture_files(client, django_elasticapm_client):
         }
     else:
         assert error['errors'][0]['context']['request']['body'] == '[REDACTED]'
+
+
+@pytest.mark.parametrize('django_elasticapm_client', [
+    {'capture_body': 'transactions'},
+], indirect=True)
+def test_options_request(client, django_elasticapm_client):
+    with override_settings(**middleware_setting(django.VERSION, [
+        'elasticapm.contrib.django.middleware.TracingMiddleware'
+    ])):
+        client.options('/')
+    transactions = django_elasticapm_client.instrumentation_store.get_all()
+    assert transactions[0]['context']['request']['method'] == 'OPTIONS'

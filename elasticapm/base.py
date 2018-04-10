@@ -129,9 +129,16 @@ class Client(object):
 
         self.processors = [import_string(p) for p in self.config.processors] if self.config.processors else []
 
-        self.instrumentation_store = TransactionsStore(
-            lambda: self._get_stack_info_for_trace(
-                stacks.iter_stack_frames(),
+        if platform.python_implementation() == 'PyPy':
+            # PyPy introduces a `_functools.partial.__call__` frame due to our use
+            # of `partial` in AbstractInstrumentedModule
+            skip_modules = ('elasticapm.', '_functools')
+        else:
+            skip_modules = ('elasticapm.',)
+
+        def frames_collector_func():
+            return self._get_stack_info_for_trace(
+                stacks.iter_stack_frames(skip_top_modules=skip_modules),
                 library_frame_context_lines=self.config.source_lines_span_library_frames,
                 in_app_frame_context_lines=self.config.source_lines_span_app_frames,
                 with_locals=self.config.collect_local_variables in ('all', 'transactions'),
@@ -140,10 +147,14 @@ class Client(object):
                     list_length=self.config.local_var_list_max_length,
                     string_length=self.config.local_var_max_length,
                 ), local_var)
-            ),
+            )
+
+        self.instrumentation_store = TransactionsStore(
+            frames_collector_func=frames_collector_func,
             collect_frequency=self.config.flush_interval,
             sample_rate=self.config.transaction_sample_rate,
             max_spans=self.config.transaction_max_spans,
+            span_frames_min_duration=self.config.span_frames_min_duration_ms,
             max_queue_size=self.config.max_queue_size,
             ignore_patterns=self.config.transactions_ignore_patterns,
         )
@@ -363,6 +374,7 @@ class Client(object):
     def get_process_info(self):
         return {
             'pid': os.getpid(),
+            'ppid': os.getppid() if hasattr(os, 'getppid') else None,
             'argv': sys.argv,
             'title': None,  # Note: if we implement this, the value needs to be wrapped with keyword_field
         }

@@ -8,6 +8,7 @@ import requests
 from pytest_localserver.http import ContentServer
 from werkzeug.wrappers import Request, Response
 
+import elasticapm
 from elasticapm.base import Client
 
 ERRORS_SCHEMA = 'https://raw.githubusercontent.com/elastic/apm-server/master/docs/spec/errors/payload.json'
@@ -72,6 +73,7 @@ def elasticapm_client(request):
     client_config.setdefault('service_name', 'myapp')
     client_config.setdefault('secret_token', 'test_key')
     client_config.setdefault('include_paths', ('*/tests/*',))
+    client_config.setdefault('span_frames_min_duration_ms', -1)
     client = TempStoreClient(**client_config)
     yield client
     client.close()
@@ -93,6 +95,7 @@ def sending_elasticapm_client(request, validating_httpserver):
     client_config.setdefault('service_name', 'myapp')
     client_config.setdefault('secret_token', 'test_key')
     client_config.setdefault('transport_class', 'elasticapm.transport.http.Transport')
+    client_config.setdefault('span_frames_min_duration_ms', -1)
     client_config.setdefault('include_paths', ('*/tests/*',))
     client = Client(**client_config)
     client.httpserver = validating_httpserver
@@ -115,3 +118,10 @@ def not_so_random():
     random.seed(42)
     yield
     random.setstate(old_state)
+
+
+@pytest.fixture()
+def instrument():
+    elasticapm.instrument()
+    yield
+    elasticapm.uninstrument()
